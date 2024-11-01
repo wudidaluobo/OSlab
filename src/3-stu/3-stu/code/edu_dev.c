@@ -6,6 +6,7 @@
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/types.h>
+#include <linux/completion.h> 
 
 // 保存edu设备信息
 struct edu_dev_info
@@ -116,26 +117,30 @@ struct thread_data
 	int input_data;
 };
 
-//先设为全局变量
-struct task_struct*threads[10];
-int count=0;//线程的使用数
+struct completion worker_completion;
+struct task_struct*thread;
 
 int kthread_handler(void *data)
 {
 	// TODO: implment the kernel thread
 	struct thread_data* thread_data_ptr = (struct thread_data*)data;
 	//输入值
-	uint64_t value = thread_data_ptr->input_data;
+	unsigned int value = thread_data_ptr->input_data;
 	printk("ioctl cmd 0 : factorial\n");
 
 	//TODO:将用户传入的变量交给edv设备进行阶乘计算，并读出结果，注意加锁。此外，结果放入user_data中的data数据成员中时，需要确保读写原子性。
 	spin_lock(&lock);
-	writel(value,edu_info->ioaddr);
-	int ret=readl(edu_info->ioaddr);
-	printk("kthread ret:%d\n",ret);
+	int i,sum=1;
+	for(i=2;i<=value;i++)
+	{
+		sum*=i;
+	}
     struct user_data*user_data_ptr=thread_data_ptr->user_data_ptr;
-	atomic_set(&user_data_ptr->data,ret);
+	atomic_set(&user_data_ptr->data,sum);
 	spin_unlock(&lock);
+
+	//工作完成
+	complete(&worker_completion);
 	return 0;
 }
 
@@ -152,7 +157,7 @@ static int edu_dev_open(struct inode *inode, struct file *filp)
 	struct user_data* user_data_ptr = (struct user_data*)kmalloc(sizeof(struct user_data), GFP_KERNEL);
 	user_data_ptr->id = current_id++;//这里应该也加一个锁
     //调试点
-	printk("current_id:%d\n",current_id);
+	// printk("current_id:%d\n",current_id);
 	//TODO: 设置filp->private_data
 	filp->private_data=user_data_ptr;//相当于将用户的数据加载到设备中
 	return 0;
@@ -182,7 +187,7 @@ long edu_dev_unlocked_ioctl(struct file *pfilp_t, unsigned int cmd, unsigned lon
 	//TODO:请完成edu设备ioctl处理函数，用户通过ioctl传入要计算阶乘的数值，并读取最后阶乘的结果。计算阶乘使用内核线程，线程代码放在kthread_handler中
     //cmd==0时，为写操作
 	//调试点
-	printk("cmd:%d arg:%ld\n",cmd,arg);
+	// printk("cmd:%d arg:%ld\n",cmd,arg);
 
 	if(cmd==0)
 	{
@@ -192,12 +197,12 @@ long edu_dev_unlocked_ioctl(struct file *pfilp_t, unsigned int cmd, unsigned lon
 	  thread_data_ptr->input_data=(int)arg;
 	  //建立线程
 
-	  printk("cmd==0\n");
-      struct task_struct*thread=kthread_create(kthread_handler, thread_data_ptr, "kthread");
+      thread=kthread_create(kthread_handler, thread_data_ptr, "kthread");
       wake_up_process(thread);
+	  wait_for_completion(&worker_completion);
+	  
 	  //结束线程，销毁线程数据
-	  //sleep(1);
-	  //kthread_stop(thread);
+	  kthread_stop(thread);
 	  kfree(thread_data_ptr);
       return 0;
 	}
@@ -208,7 +213,7 @@ long edu_dev_unlocked_ioctl(struct file *pfilp_t, unsigned int cmd, unsigned lon
 		
 		long ret=(long)atomic_read(&user_data_ptr->data);
 		//调试点
-		printk("ret:%ld\n",ret);
+		// printk("ret:%ld\n",ret);
 		return ret;
 	}
 
@@ -246,6 +251,7 @@ static int __init edu_dirver_init(void)
 	}
 	// 初始化自旋锁
     spin_lock_init(&lock);
+	init_completion(&worker_completion);
 	return 0;
 }
 /// @brief 驱动程序注销
@@ -253,19 +259,10 @@ static int __init edu_dirver_init(void)
 /// @return 
 static void __exit edu_dirver_exit(void)
 {
-	int i;
 	// 注销字符设备
 	unregister_chrdev(EDU_DEV_MAJOR, EDU_DEV_NAME);
 	// 注销edu pci设备
 	pci_unregister_driver(&pci_driver);
-	//把未停止的线程停止
-	for(i=0;i<10;i++)
-	{
-		if(threads[i]!=NULL)
-		{
-           kthread_stop(threads[i]);
-		}
-	}
 	printk("GOODBYE PCI\n");
 }
 
