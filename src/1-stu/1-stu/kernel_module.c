@@ -64,7 +64,7 @@ static int thread2_func(void *data)
     spin_lock(&lock);
     list_for_each_safe(pos,n,&my_list) { 
     //下一个节点等于头节点，休眠一段时间
-    if(n==&mylist)
+    if(n==&my_list)
     {
         spin_unlock(&lock);
         msleep_interruptible(10);
